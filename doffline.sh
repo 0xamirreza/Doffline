@@ -740,98 +740,6 @@ run_install_step() {
   return 1
 }
 
-systemd_is_running() {
-  [[ -d /run/systemd/system ]] && [[ -S /run/systemd/private || -f /run/systemd/system ]]
-}
-
-user_in_docker_group() {
-  local target_user=$1
-
-  id -nG "$target_user" 2>/dev/null | tr ' ' '\n' | grep -qx docker ||
-    getent group docker | awk -F: '{print $4}' | tr ',' '\n' | grep -qx "$target_user"
-}
-
-verify_non_root_docker_access() {
-  local target_user=$1
-  local log_file=$2
-  local attempt
-  local output
-  local status
-
-  info "Verifying docker group access for $target_user..."
-
-  if ! user_in_docker_group "$target_user"; then
-    warning "User $target_user is not a member of the docker group."
-    return 1
-  fi
-
-  if ! command -v sg >/dev/null 2>&1; then
-    warning "The sg command is unavailable; immediate non-root Docker access could not be verified."
-    warning "Group membership was configured successfully; open a new login session or run: newgrp docker"
-    return 0
-  fi
-
-  for attempt in 1 2 3; do
-    output=$(sudo -u "$target_user" sg docker -c 'docker info >/dev/null' 2>&1) || status=$?
-    status=${status:-0}
-    [[ -n "$output" ]] && printf '%s\n' "$output" | tee -a "$log_file"
-    if ((status == 0)); then
-      success "Verifying docker group access for $target_user: successful."
-      return 0
-    fi
-    status=0
-    sleep 1
-  done
-
-  if [[ -S /var/run/docker.sock ]] && sudo docker info >/dev/null 2>&1; then
-    warning "Docker daemon is running, but immediate non-root access could not be verified in this session."
-    warning "Group membership was configured successfully; open a new login session or run: newgrp docker"
-    printf 'Deferred docker group verification for %s\n' "$target_user" >>"$log_file"
-    return 0
-  fi
-
-  warning "Verifying docker group access for $target_user failed. Review the command output above and $log_file."
-  return 1
-}
-
-start_docker_service() {
-  local log_file=$1
-
-  if command -v systemctl >/dev/null 2>&1; then
-    if [[ ! -f /lib/systemd/system/docker.service &&
-      ! -f /usr/lib/systemd/system/docker.service &&
-      ! -f /etc/systemd/system/docker.service ]]; then
-      warning "No Docker systemd unit was found. Static installs may require manual service setup."
-      return 1
-    fi
-
-    if systemd_is_running; then
-      run_install_step "Enabling and starting Docker service" "$log_file" sudo systemctl enable --now docker
-      return $?
-    fi
-
-    info "Enabling and starting Docker service..."
-    if sudo systemctl enable docker 2>&1 | tee -a "$log_file"; then
-      success "Docker service was enabled."
-    else
-      warning "Could not enable the Docker systemd unit."
-      return 1
-    fi
-
-    warning "systemd is not running as PID 1; Docker was enabled but not started automatically."
-    warning "Start Docker manually with your environment's service manager, or run: sudo dockerd"
-    return 0
-  fi
-
-  if command -v service >/dev/null 2>&1; then
-    run_install_step "Starting Docker service" "$log_file" sudo service docker start
-    return $?
-  fi
-
-  warning "Neither systemctl nor service is available; Docker could not be started automatically."
-  return 1
-}
-
 configure_docker_service() {
   local target_user=$1
   local log_file=$2
@@ -852,7 +760,10 @@ configure_docker_service() {
   fi
 
   if command -v systemctl >/dev/null 2>&1; then
-    if ! start_docker_service "$log_file"; then
+    if [[ ! -f /lib/systemd/system/docker.service && ! -f /usr/lib/systemd/system/docker.service && ! -f /etc/systemd/system/docker.service ]]; then
+      warning "No Docker systemd unit was found. Static installs may require manual service setup."
+      failures=$((failures + 1))
+    elif ! run_install_step "Enabling and starting Docker service" "$log_file" sudo systemctl enable --now docker; then
       failures=$((failures + 1))
     fi
   elif command -v service >/dev/null 2>&1; then
@@ -869,7 +780,12 @@ configure_docker_service() {
       failures=$((failures + 1))
     fi
 
-    if ! verify_non_root_docker_access "$target_user" "$log_file"; then
+    if command -v sg >/dev/null 2>&1; then
+      if ! run_install_step "Verifying docker group access for $target_user" "$log_file" sudo -u "$target_user" sg docker -c 'docker info >/dev/null'; then
+        failures=$((failures + 1))
+      fi
+    else
+      warning "The sg command is unavailable; immediate non-root Docker access could not be verified."
       failures=$((failures + 1))
     fi
   else
