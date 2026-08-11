@@ -1,8 +1,18 @@
 # Doffline
 
-Interactive Docker package downloader and installer for Debian-based Linux distributions.
+Interactive Docker package downloader and installer for Linux distributions supported by Docker's official repository.
 
-`doffline.sh` reads Docker's official Linux package index, finds the latest package versions, compares them with locally installed versions, downloads selected `.deb` files, and configures Docker automatically.
+`doffline.sh` reads Docker's official Linux package index, finds the latest package versions, compares them with locally installed versions, downloads selected packages, and configures Docker automatically.
+
+## Supported Distributions
+
+| Type | Distributions | Format | Navigation |
+|------|---------------|--------|------------|
+| Debian-based | ubuntu, debian, raspbian | `.deb` | release → channel → architecture |
+| RPM-based | centos, fedora, rhel, rocky, alma, oracle, sles | `.rpm` | release → architecture → channel |
+| Static binaries | static | `.tgz` | channel → architecture |
+
+The script detects the repository layout automatically after you choose a distribution.
 
 ## Features
 
@@ -61,6 +71,18 @@ For Ubuntu 22.04 on an AMD64 system, select:
 ubuntu -> jammy -> stable -> amd64
 ```
 
+For Fedora 42 on an AMD64 system, select:
+
+```text
+fedora -> 42 -> x86_64 -> stable
+```
+
+For static binaries on AMD64, select:
+
+```text
+static -> stable -> x86_64
+```
+
 The package table looks similar to:
 
 ```text
@@ -102,6 +124,8 @@ The directory contains:
 `-- SHA256SUMS
 ```
 
+RPM downloads use the same layout with `.rpm` files. Static downloads store `.tgz` archives in the same date directory.
+
 Running the script again on the same day reuses the same date directory.
 
 ## Automatic Installation
@@ -109,7 +133,7 @@ Running the script again on the same day reuses the same date directory.
 After all selected packages download successfully, the script automatically:
 
 1. Requests administrator authentication with `sudo`
-2. Installs the downloaded `.deb` packages
+2. Installs the downloaded packages with `apt-get`, `dnf`/`yum`, or extracts static binaries
 3. Creates the `docker` group if necessary
 4. Adds the current user to the `docker` group
 5. Enables and starts the Docker service
@@ -140,20 +164,28 @@ docker run --rm hello-world
 - Linux
 - Bash 4 or newer
 - `curl` or `wget`
-- `dpkg` and `dpkg-query`
+- `dpkg` and `dpkg-query` for `.deb` status checks and installation on Debian-based systems
+- `rpm`, `dnf`, or `yum` for `.rpm` status checks and installation on RPM-based systems
 - `sudo`
-- `apt-get`
+- `apt-get` for automatic `.deb` installation
+- `dnf`, `yum`, or `rpm` for automatic `.rpm` installation
 - `systemctl` or `service`
 - `sha256sum` or `shasum`
 - `sg` for immediate group-access verification
 
-Automatic installation currently supports Debian-based `.deb` systems using `apt-get`, including Ubuntu, Debian, and Raspbian repository layouts.
+Automatic package installation supports:
+
+- Debian-based systems through `apt-get`
+- RPM-based systems through `dnf`, `yum`, or `rpm`
+- Static binaries through extraction to `/usr/local/bin` and optional systemd unit creation
+
+Static installs do not include `containerd` packages from the repository; use `.deb` or `.rpm` packages when you need the full engine stack with package-manager dependencies.
 
 ## Offline Usage Note
 
-The selected Docker `.deb` files are saved locally and can be transferred to another compatible system.
+The selected Docker packages are saved locally and can be transferred to another compatible system.
 
-However, `apt-get install` may download missing operating-system dependencies, such as `pigz`, from the configured Ubuntu or Debian repositories. For a fully disconnected installation, download all required dependency packages separately before moving the directory to the offline machine.
+However, package-manager installs may download missing operating-system dependencies from configured repositories. For a fully disconnected installation, download all required dependency packages separately before moving the directory to the offline machine.
 
 The target system must also match the selected:
 
