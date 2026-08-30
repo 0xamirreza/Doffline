@@ -76,7 +76,8 @@ Usage:
   ./doffline.sh --help
 
 Environment:
-  DOFFLINE_BASE_URL   Override the Docker Linux repository URL.
+  DOFFLINE_BASE_URL      Override the Docker Linux repository URL.
+  DOFFLINE_TARGET_USER   User to add to the docker group when running as root.
 
 Supported repository layouts:
   Debian-based (.deb)   ubuntu, debian, raspbian
@@ -740,6 +741,40 @@ run_install_step() {
   return 1
 }
 
+resolve_target_user() {
+  local user
+
+  if [[ -n "${DOFFLINE_TARGET_USER:-}" ]]; then
+    getent passwd "$DOFFLINE_TARGET_USER" >/dev/null 2>&1 ||
+      die "User '$DOFFLINE_TARGET_USER' does not exist."
+    printf '%s\n' "$DOFFLINE_TARGET_USER"
+    return 0
+  fi
+
+  user=${SUDO_USER:-${USER:-}}
+  if [[ -n "$user" && "$user" != "root" ]]; then
+    printf '%s\n' "$user"
+    return 0
+  fi
+
+  if [[ "$(id -un)" == "root" ]]; then
+    if [[ -t 0 ]]; then
+      printf '\n'
+      read -r -p "Enter a username to add to the docker group (leave empty to skip): " user
+      if [[ -n "$user" ]]; then
+        getent passwd "$user" >/dev/null 2>&1 ||
+          die "User '$user' does not exist."
+        printf '%s\n' "$user"
+        return 0
+      fi
+    fi
+    warning "Running as root without a target user. Docker group membership will not be configured."
+    return 0
+  fi
+
+  die "Could not determine the non-root user to add to the docker group."
+}
+
 configure_docker_service() {
   local target_user=$1
   local log_file=$2
@@ -753,10 +788,14 @@ configure_docker_service() {
     success "Docker group already exists."
   fi
 
-  if id -nG "$target_user" | tr ' ' '\n' | grep -qx docker; then
-    success "User $target_user is already a member of the docker group."
-  elif ! run_install_step "Adding $target_user to the docker group" "$log_file" sudo usermod -aG docker "$target_user"; then
-    failures=$((failures + 1))
+  if [[ -n "$target_user" ]]; then
+    if id -nG "$target_user" | tr ' ' '\n' | grep -qx docker; then
+      success "User $target_user is already a member of the docker group."
+    elif ! run_install_step "Adding $target_user to the docker group" "$log_file" sudo usermod -aG docker "$target_user"; then
+      failures=$((failures + 1))
+    fi
+  else
+    info "Skipping docker group user configuration."
   fi
 
   if command -v systemctl >/dev/null 2>&1; then
@@ -780,13 +819,15 @@ configure_docker_service() {
       failures=$((failures + 1))
     fi
 
-    if command -v sg >/dev/null 2>&1; then
-      if ! run_install_step "Verifying docker group access for $target_user" "$log_file" sudo -u "$target_user" sg docker -c 'docker info >/dev/null'; then
+    if [[ -n "$target_user" ]]; then
+      if command -v sg >/dev/null 2>&1; then
+        if ! run_install_step "Verifying docker group access for $target_user" "$log_file" sudo -u "$target_user" sg docker -c 'docker info >/dev/null'; then
+          failures=$((failures + 1))
+        fi
+      else
+        warning "The sg command is unavailable; immediate non-root Docker access could not be verified."
         failures=$((failures + 1))
       fi
-    else
-      warning "The sg command is unavailable; immediate non-root Docker access could not be verified."
-      failures=$((failures + 1))
     fi
   else
     warning "The docker command is unavailable after installation."
@@ -804,7 +845,11 @@ print_install_summary() {
 
   printf '\n%sInstallation summary%s\n' "$BOLD" "$RESET"
   printf '  Packages: %s\n' "$output_dir"
-  printf '  User:     %s\n' "$target_user"
+  if [[ -n "$target_user" ]]; then
+    printf '  User:     %s\n' "$target_user"
+  else
+    printf '  User:     (none — root install)\n'
+  fi
   printf '  Log:      %s\n' "$log_file"
 
   if ((failures > 0)); then
@@ -813,9 +858,13 @@ print_install_summary() {
   fi
 
   success "Docker was installed, started, and verified successfully."
-  success "User $target_user was added to the docker group."
-  printf 'Open a new login session to use Docker normally without sudo.\n'
-  printf 'For the current terminal, run: newgrp docker\n'
+  if [[ -n "$target_user" ]]; then
+    success "User $target_user was added to the docker group."
+    printf 'Open a new login session to use Docker normally without sudo.\n'
+    printf 'For the current terminal, run: newgrp docker\n'
+  else
+    success "Docker is ready. Root can use Docker directly without group membership."
+  fi
 }
 
 install_deb_packages() {
@@ -825,9 +874,7 @@ install_deb_packages() {
   local -a deb_files=()
   local failures=0
 
-  target_user=${SUDO_USER:-${USER:-}}
-  [[ -n "$target_user" && "$target_user" != "root" ]] ||
-    die "Could not determine the non-root user to add to the docker group."
+  target_user=$(resolve_target_user)
   command -v sudo >/dev/null 2>&1 || die "sudo is required for installation."
   command -v apt-get >/dev/null 2>&1 ||
     die "Automatic .deb installation requires apt-get on Debian, Ubuntu, or Raspbian."
@@ -865,9 +912,7 @@ install_rpm_packages() {
   local failures=0
   local install_cmd=()
 
-  target_user=${SUDO_USER:-${USER:-}}
-  [[ -n "$target_user" && "$target_user" != "root" ]] ||
-    die "Could not determine the non-root user to add to the docker group."
+  target_user=$(resolve_target_user)
   command -v sudo >/dev/null 2>&1 || die "sudo is required for installation."
   [[ "$(uname -s)" == "Linux" ]] || die "Automatic installation requires Linux."
 
@@ -915,9 +960,7 @@ install_static_binaries() {
   local dockerd_binary=""
   local failures=0
 
-  target_user=${SUDO_USER:-${USER:-}}
-  [[ -n "$target_user" && "$target_user" != "root" ]] ||
-    die "Could not determine the non-root user to add to the docker group."
+  target_user=$(resolve_target_user)
   command -v sudo >/dev/null 2>&1 || die "sudo is required for installation."
   [[ "$(uname -s)" == "Linux" ]] || die "Automatic installation requires Linux."
 
