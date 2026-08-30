@@ -29,6 +29,7 @@ The script detects the repository layout automatically after you choose a distri
 - Automatic package installation with `apt-get`
 - Docker service enablement and startup
 - Automatic `docker` group creation and user configuration
+- Root and non-interactive install support through `DOFFLINE_TARGET_USER`
 - Docker daemon and non-root access verification
 - Automatic fallback from `curl` to `wget`
 - Detailed installation log and failure reporting
@@ -43,7 +44,7 @@ The default package set contains:
 - `docker-buildx-plugin`
 - `docker-compose-plugin`
 
-You can also display and select every package family available in the chosen repository path.
+You can also display and select every package family available in the chosen repository path, including optional components such as `docker-ce-rootless-extras`, `docker-model-plugin`, `docker-sbx`, and `docker-secrets-engine`.
 
 ## Installation
 
@@ -62,6 +63,22 @@ Run the script as a normal user:
 ```
 
 Do not run the complete script with `sudo`. It requests administrator privileges only when installation and system configuration are required.
+
+### Running as root
+
+If you run the script directly as `root` (without `sudo`), the script cannot infer a non-root user automatically. In that case it will:
+
+- Prompt interactively for a username to add to the `docker` group (leave empty to skip), or
+- Use `DOFFLINE_TARGET_USER` when set, or
+- Skip docker group configuration and install Docker for root-only use
+
+Example:
+
+```bash
+DOFFLINE_TARGET_USER=deploy ./doffline.sh
+```
+
+When group configuration is skipped, root can use Docker immediately after installation. Other users must be added to the `docker` group manually.
 
 ## Example Selection
 
@@ -132,13 +149,23 @@ Running the script again on the same day reuses the same date directory.
 
 After all selected packages download successfully, the script automatically:
 
-1. Requests administrator authentication with `sudo`
+1. Requests administrator authentication with `sudo` (or runs directly when already root)
 2. Installs the downloaded packages with `apt-get`, `dnf`/`yum`, or extracts static binaries
 3. Creates the `docker` group if necessary
-4. Adds the current user to the `docker` group
+4. Adds a target user to the `docker` group when one is known
 5. Enables and starts the Docker service
 6. Verifies the Docker daemon
-7. Verifies Docker access through the `docker` group
+7. Verifies Docker access through the `docker` group for the target user
+
+The target user is resolved in this order:
+
+| Priority | Source |
+|----------|--------|
+| 1 | `DOFFLINE_TARGET_USER` environment variable |
+| 2 | `SUDO_USER` when the script was started with `sudo` |
+| 3 | Current user when not `root` |
+| 4 | Interactive prompt when running as `root` |
+| 5 | Skipped when running as `root` non-interactively without `DOFFLINE_TARGET_USER` |
 
 Full installation output is written to:
 
@@ -146,18 +173,20 @@ Full installation output is written to:
 YYYY-MM-DD/install.log
 ```
 
-After a successful installation, open a new login session or activate the group in the current terminal:
+After a successful installation for a non-root user, open a new login session or activate the group in the current terminal:
 
 ```bash
 newgrp docker
 ```
 
-Verify non-root Docker access:
+Verify Docker access:
 
 ```bash
 docker version
 docker run --rm hello-world
 ```
+
+When the script runs as `root` and no target user is configured, verify directly as root without `newgrp`.
 
 ## Requirements
 
@@ -213,6 +242,16 @@ Override the HTTP User-Agent if a proxy or CDN rejects the default request:
 DOFFLINE_USER_AGENT="Mozilla/5.0" ./doffline.sh
 ```
 
+### Target User for Docker Group
+
+Specify which user should be added to the `docker` group. Useful when running as `root` or in non-interactive environments:
+
+```bash
+DOFFLINE_TARGET_USER=deploy ./doffline.sh
+```
+
+The user must already exist on the system. When unset and the script runs as `root` without a TTY, docker group membership is skipped.
+
 The script uses HTTP/1.1 and automatically tries `wget` if `curl` fails.
 
 ## Troubleshooting
@@ -250,6 +289,22 @@ cat YYYY-MM-DD/install.log
 ```
 
 Downloaded packages and successful partial downloads remain in the date directory.
+
+To install packages that were already downloaded without re-running the full script:
+
+```bash
+sudo apt-get install -y YYYY-MM-DD/*.deb
+sudo systemctl enable --now docker
+```
+
+Replace `apt-get` with `dnf install -y` or `rpm -Uvh` for `.rpm` packages.
+
+### Running as root Without a Target User
+
+If you run the script as `root` and see `Running as root without a target user`, Docker is installed but no user is added to the `docker` group. Either:
+
+- Set `DOFFLINE_TARGET_USER` before running, or
+- Add users manually: `usermod -aG docker username`
 
 ### Check Download Integrity
 
